@@ -1,0 +1,553 @@
+--lowk tuff?
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- AC DETECTION DEBUG - COMPREHENSIVE
+
+-- Config
+local Config = {
+    StealSpeed = 30,
+    GrabRadius = 20,
+    Gravity = 120,
+    GalaxyGravityPercent = 70,
+    HopPower = 35,
+    HopCooldown = 0.08,
+    AimbotRadius = 100,
+    BatAimbotSpeed = 55,
+    SpeedBoost = 29,
+}
+
+-- Keybinds
+local Keybinds = {
+    AutoLeft = Enum.KeyCode.Q,
+    AutoRight = Enum.KeyCode.E,
+    SpeedBoost = Enum.KeyCode.R,
+    AutoSteal = Enum.KeyCode.V,
+    BatAimbot = Enum.KeyCode.Z,
+    AntiRagdoll = Enum.KeyCode.X,
+    NoAnimations = Enum.KeyCode.N,
+}
+
+-- Save/Load
+local function saveConfig()
+    local data = {
+        Config = Config,
+        Keybinds = {},
+        Features = {}
+    }
+    for k, v in pairs(Keybinds) do
+        if v then
+            data.Keybinds[k] = v.Name
+        end
+    end
+    -- Save feature states
+    pcall(function()
+        data.Features.SpeedBoost = SpeedBoostBtn and SpeedBoostBtn.BackgroundColor3 == Color3.fromRGB(0, 170, 255) or false
+        data.Features.AutoSteal = AutoStealBtn and AutoStealBtn.BackgroundColor3 == Color3.fromRGB(0, 170, 255) or false
+        data.Features.BatAimbot = BatAimbotBtn and BatAimbotBtn.BackgroundColor3 == Color3.fromRGB(0, 170, 255) or false
+        data.Features.Galaxy = GalaxyBtn and GalaxyBtn.BackgroundColor3 == Color3.fromRGB(0, 170, 255) or false
+        data.Features.Optimizer = OptimizerBtn and OptimizerBtn.BackgroundColor3 == Color3.fromRGB(0, 170, 255) or false
+        data.Features.AntiRagdoll = AntiRagdollBtn and AntiRagdollBtn.BackgroundColor3 == Color3.fromRGB(0, 170, 255) or false
+        data.Features.NoAnimations = NoAnimBtn and NoAnimBtn.BackgroundColor3 == Color3.fromRGB(0, 170, 255) or false
+    end)
+    pcall(function()
+        writefile("PlasmaDuels_Config.json", HttpService:JSONEncode(data))
+    end)
+end
+
+local function loadConfig()
+    pcall(function()
+        if isfile("PlasmaDuels_Config.json") then
+            local data = HttpService:JSONDecode(readfile("PlasmaDuels_Config.json"))
+            if data.Config then
+                for k, v in pairs(data.Config) do
+                    Config[k] = v
+                end
+            end
+            if data.Keybinds then
+                for k, v in pairs(data.Keybinds) do
+                    Keybinds[k] = Enum.KeyCode[v]
+                end
+            end
+            -- Return feature states to restore later
+            return data.Features
+        end
+    end)
+    return nil
+end
+
+local savedFeatures = loadConfig()
+
+local leftActive = false
+local rightActive = false
+local speedBoostConn = nil
+local autoStealGui = nil
+local circleParts = {}
+local CIRCLE_COLOR = Color3.fromRGB(0, 170, 255)
+local noAnimConn = nil
+local batAimbotConn = nil
+
+-- Galaxy Mode variables
+local galaxyVectorForce = nil
+local galaxyAttachment = nil
+local galaxyEnabled = false
+local hopsEnabled = false
+local lastHopTime = 0
+local spaceHeld = false
+local originalJumpPower = 50
+local DEFAULT_GRAVITY = 196.2
+
+-- Anti-Ragdoll (22S VERSION - MOTOR6D FIX)
+local antiRagdollConn = nil
+
+-- Inf Jump (always on)
+local infJumpEnabled = true
+local jumpForce     = 54
+local clampFallSpeed = 80
+local infJumpConn   = nil
+
+local function startInfJump()
+    if infJumpConn then return end
+    infJumpConn = UserInputService.JumpRequest:Connect(function()
+        if not infJumpEnabled then return end
+        local c = player.Character
+        local hrp = c and c:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            hrp.AssemblyLinearVelocity.X,
+            jumpForce,
+            hrp.AssemblyLinearVelocity.Z
+        )
+    end)
+end
+
+-- Clamp fall speed so inf jump doesn't feel floaty/broken
+RunService.Heartbeat:Connect(function()
+    if not infJumpEnabled then return end
+    local c = player.Character
+    local hrp = c and c:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if hrp.AssemblyLinearVelocity.Y < -clampFallSpeed then
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            hrp.AssemblyLinearVelocity.X,
+            -clampFallSpeed,
+            hrp.AssemblyLinearVelocity.Z
+        )
+    end
+end)
+
+startInfJump() -- always on, no toggle
+
+local function startAntiRagdoll()
+    if antiRagdollConn then return end
+    antiRagdollConn = RunService.Heartbeat:Connect(function()
+        local char = player.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            local humState = hum:GetState()
+            if humState == Enum.HumanoidStateType.Physics or humState == Enum.HumanoidStateType.Ragdoll or humState == Enum.HumanoidStateType.FallingDown then
+                hum:ChangeState(Enum.HumanoidStateType.Running)
+                workspace.CurrentCamera.CameraSubject = hum
+                pcall(function()
+                    if player.Character then
+                        local PlayerModule = player.PlayerScripts:FindFirstChild("PlayerModule")
+                        if PlayerModule then
+                            local Controls = require(PlayerModule:FindFirstChild("ControlModule"))
+                            Controls:Enable()
+                        end
+                    end
+                end)
+                if root then
+                    root.Velocity = Vector3.new(0, 0, 0)
+                    root.RotVelocity = Vector3.new(0, 0, 0)
+                end
+            end
+        end
+        for _, obj in ipairs(char:GetDescendants()) do
+            if obj:IsA("Motor6D") and obj.Enabled == false then obj.Enabled = true end
+        end
+    end)
+end
+
+local function stopAntiRagdoll()
+    if antiRagdollConn then
+        antiRagdollConn:Disconnect()
+        antiRagdollConn = nil
+    end
+end
+
+local EnableAntiRagdoll = startAntiRagdoll
+local DisableAntiRagdoll = stopAntiRagdoll
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "keekduelGUI"
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.ResetOnSpawn = false
+
+-- Main Frame
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 340, 0, 480)
+MainFrame.Position = UDim2.new(0.5, -170, 0.5, -240)
+MainFrame.BackgroundColor3 = Color3.fromRGB(10, 20, 40)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 16)
+UICorner.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Thickness = 2.5
+MainStroke.Color = Color3.fromRGB(0, 170, 255)
+MainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+MainStroke.Parent = MainFrame
+
+-- Animated Glow
+task.spawn(function()
+    while true do
+        for i = 0, 30 do
+            MainStroke.Thickness = 2.5 + (i * 0.04)
+            task.wait(0.03)
+        end
+        for i = 0, 30 do
+            MainStroke.Thickness = 3.7 - (i * 0.04)
+            task.wait(0.03)
+        end
+    end
+end)
+
+-- Title Bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 50)
+TitleBar.BackgroundColor3 = Color3.fromRGB(5, 10, 20)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 16)
+TitleCorner.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Size = UDim2.new(1, 0, 1, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "KEEK DUELS"
+Title.Font = Enum.Font.GothamBlack
+Title.TextSize = 20
+Title.TextColor3 = Color3.fromRGB(0, 170, 255)
+Title.Parent = TitleBar
+
+-- Discord Invite
+local DiscordLabel = Instance.new("TextLabel")
+DiscordLabel.Name = "Discord"
+DiscordLabel.Size = UDim2.new(1, 0, 0, 20)
+DiscordLabel.Position = UDim2.new(0, 0, 1, -25)
+DiscordLabel.BackgroundTransparency = 1
+DiscordLabel.Text = "discord.gg/plasmahub"
+DiscordLabel.Font = Enum.Font.GothamBold
+DiscordLabel.TextSize = 12
+DiscordLabel.TextColor3 = Color3.fromRGB(0, 170, 255)
+DiscordLabel.Parent = MainFrame
+
+-- Tab System
+local TabContainer = Instance.new("Frame")
+TabContainer.Name = "TabContainer"
+TabContainer.Size = UDim2.new(1, -20, 0, 35)
+TabContainer.Position = UDim2.new(0, 10, 0, 60)
+TabContainer.BackgroundTransparency = 1
+TabContainer.Parent = MainFrame
+
+local FeaturesTab = Instance.new("TextButton")
+FeaturesTab.Name = "FeaturesTab"
+FeaturesTab.Size = UDim2.new(0.31, 0, 1, 0)
+FeaturesTab.Position = UDim2.new(0, 0, 0, 0)
+FeaturesTab.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+FeaturesTab.Text = "FEATURES"
+FeaturesTab.Font = Enum.Font.GothamBold
+FeaturesTab.TextSize = 13
+FeaturesTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+FeaturesTab.BorderSizePixel = 0
+FeaturesTab.Parent = TabContainer
+
+local FeaturesCorner = Instance.new("UICorner")
+FeaturesCorner.CornerRadius = UDim.new(0, 8)
+FeaturesCorner.Parent = FeaturesTab
+
+local KeybindsTab = Instance.new("TextButton")
+KeybindsTab.Name = "KeybindsTab"
+KeybindsTab.Size = UDim2.new(0.31, 0, 1, 0)
+KeybindsTab.Position = UDim2.new(0.345, 0, 0, 0)
+KeybindsTab.BackgroundColor3 = Color3.fromRGB(20, 30, 50)
+KeybindsTab.Text = "KEYBINDS"
+KeybindsTab.Font = Enum.Font.GothamBold
+KeybindsTab.TextSize = 13
+KeybindsTab.TextColor3 = Color3.fromRGB(150, 150, 150)
+KeybindsTab.BorderSizePixel = 0
+KeybindsTab.Parent = TabContainer
+
+local KeybindsCorner = Instance.new("UICorner")
+KeybindsCorner.CornerRadius = UDim.new(0, 8)
+KeybindsCorner.Parent = KeybindsTab
+
+local SettingsTab = Instance.new("TextButton")
+SettingsTab.Name = "SettingsTab"
+SettingsTab.Size = UDim2.new(0.31, 0, 1, 0)
+SettingsTab.Position = UDim2.new(0.69, 0, 0, 0)
+SettingsTab.BackgroundColor3 = Color3.fromRGB(20, 30, 50)
+SettingsTab.Text = "SETTINGS"
+SettingsTab.Font = Enum.Font.GothamBold
+SettingsTab.TextSize = 13
+SettingsTab.TextColor3 = Color3.fromRGB(150, 150, 150)
+SettingsTab.BorderSizePixel = 0
+SettingsTab.Parent = TabContainer
+
+local SettingsCorner = Instance.new("UICorner")
+SettingsCorner.CornerRadius = UDim.new(0, 8)
+SettingsCorner.Parent = SettingsTab
+
+-- Content Frames
+local FeaturesFrame = Instance.new("ScrollingFrame")
+FeaturesFrame.Name = "FeaturesFrame"
+FeaturesFrame.Size = UDim2.new(1, -20, 1, -145)
+FeaturesFrame.Position = UDim2.new(0, 10, 0, 105)
+FeaturesFrame.BackgroundTransparency = 1
+FeaturesFrame.ScrollBarThickness = 4
+FeaturesFrame.CanvasSize = UDim2.new(0, 0, 0, 450)
+FeaturesFrame.Parent = MainFrame
+
+local KeybindsFrame = Instance.new("ScrollingFrame")
+KeybindsFrame.Name = "KeybindsFrame"
+KeybindsFrame.Size = UDim2.new(1, -20, 1, -145)
+KeybindsFrame.Position = UDim2.new(0, 10, 0, 105)
+KeybindsFrame.BackgroundTransparency = 1
+KeybindsFrame.ScrollBarThickness = 4
+KeybindsFrame.CanvasSize = UDim2.new(0, 0, 0, 440)
+KeybindsFrame.Visible = false
+KeybindsFrame.Parent = MainFrame
+
+local SettingsFrame = Instance.new("ScrollingFrame")
+SettingsFrame.Name = "SettingsFrame"
+SettingsFrame.Size = UDim2.new(1, -20, 1, -145)
+SettingsFrame.Position = UDim2.new(0, 10, 0, 105)
+SettingsFrame.BackgroundTransparency = 1
+SettingsFrame.ScrollBarThickness = 4
+SettingsFrame.CanvasSize = UDim2.new(0, 0, 0, 400)
+SettingsFrame.Visible = false
+SettingsFrame.Parent = MainFrame
+
+-- Tab Switching
+-- PLASMA LAGGER STYLE TOGGLE
+local function createLaggerToggle(parent, name, text, yPos)
+    local button = Instance.new("TextButton")
+    button.Name = name.."Toggle"
+    button.Size = UDim2.new(1, -10, 0, 40)
+    button.Position = UDim2.new(0, 5, 0, yPos)
+    button.BackgroundColor3 = Color3.fromRGB(20, 30, 50)
+    button.Text = text
+    button.Font = Enum.Font.GothamBold
+    button.TextSize = 13
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.BorderSizePixel = 0
+    button.Parent = parent
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = button
+    
+    return button
+end
+
+-- Keybind Button
+local function createKeybindButton(parent, name, text, currentKey, yPos)
+    local container = Instance.new("Frame")
+    container.Name = name.."Container"
+    container.Size = UDim2.new(1, -10, 0, 50)
+    container.Position = UDim2.new(0, 5, 0, yPos)
+    container.BackgroundColor3 = Color3.fromRGB(15, 25, 45)
+    container.BorderSizePixel = 0
+    container.Parent = parent
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = container
+    
+    local keyButton = Instance.new("TextButton")
+    keyButton.Name = name.."Key"
+    keyButton.Size = UDim2.new(0, 35, 0, 35)
+    keyButton.Position = UDim2.new(0, 8, 0.5, -17.5)
+    keyButton.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+    keyButton.Text = currentKey and currentKey.Name:sub(1,1) or "NONE"
+    keyButton.Font = Enum.Font.GothamBlack
+    keyButton.TextSize = currentKey and 16 or 10
+    keyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    keyButton.BorderSizePixel = 0
+    keyButton.Parent = container
+    
+    local keyCorner = Instance.new("UICorner")
+    keyCorner.CornerRadius = UDim.new(0, 8)
+    keyCorner.Parent = keyButton
+    
+    local keyGradient = Instance.new("UIGradient")
+    keyGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 170, 255)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(100, 200, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 170, 255))
+    })
+    keyGradient.Rotation = 45
+    keyGradient.Parent = keyButton
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -55, 1, 0)
+    label.Position = UDim2.new(0, 50, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 13
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = container
+    
+    return keyButton
+end
+
+-- Number Input
+local function createNumberInput(parent, name, text, currentValue, min, max, yPos)
+    local container = Instance.new("Frame")
+    container.Name = name.."Container"
+    container.Size = UDim2.new(1, -10, 0, 45)
+    container.Position = UDim2.new(0, 5, 0, yPos)
+    container.BackgroundColor3 = Color3.fromRGB(15, 25, 45)
+    container.BorderSizePixel = 0
+    container.Parent = parent
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = container
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -100, 1, 0)
+    label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 13
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = container
+    
+    local numButton = Instance.new("TextButton")
+    numButton.Name = name.."Button"
+    numButton.Size = UDim2.new(0, 80, 0, 30)
+    numButton.Position = UDim2.new(1, -85, 0.5, -15)
+    numButton.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+    numButton.Text = tostring(currentValue)
+    numButton.Font = Enum.Font.GothamBold
+    numButton.TextSize = 12
+    numButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    numButton.BorderSizePixel = 0
+    numButton.Parent = container
+    
+    local numCorner = Instance.new("UICorner")
+    numCorner.CornerRadius = UDim.new(0, 8)
+    numCorner.Parent = numButton
+    
+    return numButton
+end
+
+-- Features
+local AutoLeftBtn = createLaggerToggle(FeaturesFrame, "AutoLeft", "Auto Left", 0)
+local AutoRightBtn = createLaggerToggle(FeaturesFrame, "AutoRight", "Auto Right", 45)
+local SpeedBoostBtn = createLaggerToggle(FeaturesFrame, "SpeedBoost", "Steal Speed", 90)
+local AutoStealBtn = createLaggerToggle(FeaturesFrame, "AutoSteal", "Auto Steal", 135)
+local BatAimbotBtn = createLaggerToggle(FeaturesFrame, "BatAimbot", "Bat Aimbot", 180)
+local GalaxyBtn = createLaggerToggle(FeaturesFrame, "Galaxy", "Jump Power", 225)
+local OptimizerBtn = createLaggerToggle(FeaturesFrame, "Optimizer", "Performance", 270)
+local AntiRagdollBtn = createLaggerToggle(FeaturesFrame, "AntiRagdoll", "Anti Ragdoll", 315)
+local NoAnimBtn = createLaggerToggle(FeaturesFrame, "NoAnimations", "No Animations", 360)
+
+-- Restore saved feature states
+task.delay(0.5, function()
+    if savedFeatures then
+        if savedFeatures.SpeedBoost then
+            updateLaggerToggle(SpeedBoostBtn, true)
+            startSpeedBoost()
+        end
+        if savedFeatures.AutoSteal then
+            updateLaggerToggle(AutoStealBtn, true)
+            task.spawn(function()
+                initAutoStealGUI()
+                createCircle()
+            end)
+        end
+        if savedFeatures.BatAimbot then
+            updateLaggerToggle(BatAimbotBtn, true)
+            startBatAimbot()
+        end
+        if savedFeatures.Galaxy then
+            updateLaggerToggle(GalaxyBtn, true)
+            startGalaxy()
+        end
+        if savedFeatures.Optimizer then
+            updateLaggerToggle(OptimizerBtn, true)
+            enableOptimizer()
+        end
+        if savedFeatures.AntiRagdoll then
+            updateLaggerToggle(AntiRagdollBtn, true)
+            EnableAntiRagdoll()
+        end
+        if savedFeatures.NoAnimations then
+            updateLaggerToggle(NoAnimBtn, true)
+            toggleNoAnimations(true)
+        end
+    else
+        -- Default: Auto Steal ON if no saved config
+        updateLaggerToggle(AutoStealBtn, true)
+        task.spawn(function()
+            initAutoStealGUI()
+            createCircle()
+        end)
+    end
+end)
+
+-- Keybinds Tab
+local AutoLeftKey = createKeybindButton(KeybindsFrame, "AutoLeft", "Auto Left Keybind", Keybinds.AutoLeft, 0)
+local AutoRightKey = createKeybindButton(KeybindsFrame, "AutoRight", "Auto Right Keybind", Keybinds.AutoRight, 55)
+local SpeedBoostKey = createKeybindButton(KeybindsFrame, "SpeedBoost", "Speed Boost Keybind", Keybinds.SpeedBoost, 110)
+local AutoStealKey = createKeybindButton(KeybindsFrame, "AutoSteal", "Auto Steal Keybind", Keybinds.AutoSteal, 165)
+local BatAimbotKey = createKeybindButton(KeybindsFrame, "BatAimbot", "Bat Aimbot Keybind", Keybinds.BatAimbot, 220)
+local AntiRagdollKey = createKeybindButton(KeybindsFrame, "AntiRagdoll", "Anti Ragdoll Keybind", Keybinds.AntiRagdoll, 275)
+local NoAnimKey = createKeybindButton(KeybindsFrame, "NoAnimations", "No Anim Keybind", Keybinds.NoAnimations, 330)
+
+-- Settings Tab (number inputs only)
+local SpeedBoostInput = createNumberInput(SettingsFrame, "SpeedBoost", "Speed While Stealing", Config.SpeedBoost, 1, 100, 0)
+local GrabRadiusInput = createNumberInput(SettingsFrame, "GrabRadius", "Grab Radius", Config.GrabRadius, 1, 999999, 50)
+local GalaxyGravityInput = createNumberInput(SettingsFrame, "GalaxyGravityPercent", "Gravity", Config.GalaxyGravityPercent, 1, 130, 100)
+local HopPowerInput = createNumberInput(SettingsFrame, "HopPower", "Hop Power", Config.HopPower, 1, 80, 150)
+local AimbotRadiusInput = createNumberInput(SettingsFrame, "AimbotRadius", "Aimbot Radius", Config.AimbotRadius, 1, 999, 200)
+local AimbotSpeedInput = createNumberInput(SettingsFrame, "BatAimbotSpeed", "Aimbot Speed", Config.BatAimbotSpeed, 1, 200, 250)
+
+-- Save Button
+local SaveButton = Instance.new("TextButton")
+SaveButton.Name = "SaveButton"
+SaveButton.Size = UDim2.new(1, -10, 0, 40)
+SaveButton.Position = UDim2.new(0, 5, 0, 305)
+SaveButton.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+SaveButton.Text = "SAVE CONFIG"
+SaveButton.Font = Enum.Font.GothamBlack
+SaveButton.TextSize = 14
+SaveButton.TextColor3 = Color3.fromRGB(255, 255, 255)
